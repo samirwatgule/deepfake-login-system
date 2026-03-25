@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+venv/
+env/
+.venv/
+
+# Build output
+dist/
+
+# AI Models (too large for git — download separately)
+*.h5
+
+# Environment & secrets
+.env
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Vercel
+.vercel/
+
+# Logs & DB
+logs/
+*.log
+quantumshield.db
+
+# Uploads
+static/uploads/
+
+# Misc
+prompt.docx
