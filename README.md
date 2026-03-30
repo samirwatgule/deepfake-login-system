@@ -49,7 +49,7 @@ QuantumShield/
 │   ├── components/               # Reusable UI components
 │   └── services/                 # API client wrapper
 ├── deepfake_detection_model.h5   # Core AI model weights (Larger file)
-├── quantumshield.db              # SQLite Database
+├── .env                          # Environment variables (DATABASE_URL)
 └── ...
 ```
 
@@ -62,7 +62,7 @@ QuantumShield/
 | **Frontend**| React 18, Vite, Tailwind/CSS, Axios, react-webcam |
 | **Backend** | Python 3.10+, Flask 3.1, Flask-CORS |
 | **AI/ML**   | TensorFlow, Keras, XceptionNet, OpenCV, Scikit-learn |
-| **Database**| SQLite 3 (WAL mode enabled) |
+| **Database**| PostgreSQL 14+ (psycopg2) |
 | **Security**| JWT (RS256/HS256), Bcrypt, GeoIP |
 
 ---
@@ -72,6 +72,7 @@ QuantumShield/
 ### Prerequisites
 - Python 3.10+
 - Node.js 18+
+- PostgreSQL 14+
 - Git
 
 ### 1️⃣ Clone the Repository
@@ -95,7 +96,10 @@ source venv/bin/activate
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Start the Flask server
+# (Optional) Set a custom PostgreSQL connection URL:
+# set DATABASE_URL=postgresql://user:pass@localhost:5432/quantumshield
+
+# Start the Flask server (database is auto-created on first run)
 python api/index.py
 ```
 > The server will start at `http://localhost:5000`

@@ -12,7 +12,7 @@ from api.services.behavior_service import compute_behavior_score
 from api.services.face_service import analyze_face, generate_face_embedding
 from api.services.risk_engine import compute_total_risk
 from api.utils.helpers import validate_email, validate_password, get_client_ip, jwt_required
-from api.database import get_connection
+from api.database import get_connection, _get_cursor
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -36,10 +36,10 @@ def _check_impossible_travel(user_id, current_lat, current_lon, current_time):
         return False, ''
     try:
         conn = get_connection()
-        cur = conn.cursor()
+        cur = _get_cursor(conn)
         cur.execute("""
             SELECT latitude, longitude, timestamp FROM login_logs
-            WHERE user_id = ? AND latitude != 0 AND longitude != 0
+            WHERE user_id = %s AND latitude != 0 AND longitude != 0
             ORDER BY timestamp DESC LIMIT 1
         """, (user_id,))
         row = cur.fetchone()
@@ -49,8 +49,10 @@ def _check_impossible_travel(user_id, current_lat, current_lon, current_time):
             return False, ''
 
         prev_lat, prev_lon = row['latitude'], row['longitude']
-        prev_time = datetime.fromisoformat(str(row['timestamp']))
-        if current_time.tzinfo:
+        prev_time = row['timestamp']
+        if isinstance(prev_time, str):
+            prev_time = datetime.fromisoformat(prev_time)
+        if current_time.tzinfo and prev_time.tzinfo is None:
             prev_time = prev_time.replace(tzinfo=current_time.tzinfo)
 
         distance_km = _haversine_km(prev_lat, prev_lon, current_lat, current_lon)
@@ -271,7 +273,7 @@ def get_profile():
 def get_user_logs():
     try:
         conn = get_connection()
-        cur = conn.cursor()
+        cur = _get_cursor(conn)
         limit = int(request.args.get('limit', 20))
 
         cur.execute("""
@@ -279,9 +281,9 @@ def get_user_logs():
                    behavior_risk, face_risk, total_risk, decision, face_verdict,
                    face_confidence, face_image_path, is_suspicious, timestamp
             FROM login_logs
-            WHERE user_id = ?
+            WHERE user_id = %s
             ORDER BY timestamp DESC
-            LIMIT ?
+            LIMIT %s
         """, (request.user_id, limit))
 
         rows = cur.fetchall()
@@ -296,7 +298,7 @@ def get_user_logs():
             'face_verdict': r['face_verdict'], 'face_confidence': r['face_confidence'],
             'face_image_path': r['face_image_path'],
             'is_suspicious': bool(r['is_suspicious']),
-            'timestamp': r['timestamp']
+            'timestamp': str(r['timestamp'])
         } for r in rows]
 
         return jsonify({'logs': logs}), 200
@@ -311,14 +313,14 @@ def log_login_attempt(user_id, email, ip_address, device_info, city, country,
                       face_image_path='', is_suspicious=0):
     try:
         conn = get_connection()
-        cur = conn.cursor()
+        cur = _get_cursor(conn)
         cur.execute("""
             INSERT INTO login_logs
             (user_id, email, ip_address, device_info, city, country,
              latitude, longitude, typing_speed,
              device_risk, location_risk, behavior_risk, face_risk, total_risk, decision,
              face_verdict, face_confidence, face_image_path, is_suspicious)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             user_id, email, ip_address, device_info, city, country,
             latitude, longitude, typing_speed,

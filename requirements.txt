@@ -8,3 +8,4 @@ scikit-learn==1.6.1
 tensorflow
 Pillow
 opencv-python-headless
+psycopg2-binary==2.9.9

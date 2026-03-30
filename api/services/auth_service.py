@@ -3,7 +3,7 @@ import jwt
 import os
 import json
 from datetime import datetime, timedelta, timezone
-from api.database import get_connection
+from api.database import get_connection, _get_cursor
 
 def hash_password(password):
     """Hash a password using bcrypt."""
@@ -29,10 +29,10 @@ def generate_token(user_id, email, role='user'):
 def register_user(email, password, device_info, location, typing_speed, face_image_b64, name=''):
     """Register a new user with all baseline data. Saves face image to disk."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = _get_cursor(conn)
 
     try:
-        cur.execute("SELECT id FROM users WHERE email = ?", (email,))
+        cur.execute("SELECT id FROM users WHERE email = %s", (email,))
         if cur.fetchone():
             conn.close()
             return None, "Email already registered"
@@ -86,7 +86,8 @@ def register_user(email, password, device_info, location, typing_speed, face_ima
             INSERT INTO users (name, email, password_hash, role, registered_device, home_city, home_country,
                              avg_typing_speed, typing_variance, login_count, face_embedding,
                              face_attributes_json, is_face_verified)
-            VALUES (?, ?, ?, 'user', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, 'user', %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
         """, (
             name.strip() if name else '',
             email,
@@ -102,7 +103,7 @@ def register_user(email, password, device_info, location, typing_speed, face_ima
             1 if face_image_b64 else 0
         ))
 
-        user_id = cur.lastrowid
+        user_id = cur.fetchone()['id']
         conn.commit()
         conn.close()
 
@@ -118,13 +119,13 @@ def register_user(email, password, device_info, location, typing_speed, face_ima
 def authenticate_user(email, password):
     """Verify user credentials. Returns user data or None."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = _get_cursor(conn)
 
     try:
         cur.execute("""
             SELECT id, name, email, password_hash, role, is_blocked, registered_device, home_city, home_country,
                    avg_typing_speed, typing_variance, login_count, face_embedding, is_face_verified, created_at
-            FROM users WHERE email = ?
+            FROM users WHERE email = %s
         """, (email,))
 
         row = cur.fetchone()
@@ -153,7 +154,7 @@ def authenticate_user(email, password):
             'login_count': row['login_count'],
             'face_embedding': row['face_embedding'],
             'is_face_verified': bool(row['is_face_verified']),
-            'created_at': row['created_at']
+            'created_at': str(row['created_at'])
         }
 
         return user, None
@@ -174,10 +175,10 @@ def authenticate_admin(email, password):
 def update_user_baseline(user_id, typing_speed):
     """Update user typing baseline after successful login."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = _get_cursor(conn)
 
     try:
-        cur.execute("SELECT avg_typing_speed, typing_variance, login_count FROM users WHERE id = ?", (user_id,))
+        cur.execute("SELECT avg_typing_speed, typing_variance, login_count FROM users WHERE id = %s", (user_id,))
         row = cur.fetchone()
 
         if row:
@@ -190,8 +191,8 @@ def update_user_baseline(user_id, typing_speed):
             new_var = alpha * abs(typing_speed - new_avg) + (1 - alpha) * old_var if count > 0 else 0.0
 
             cur.execute("""
-                UPDATE users SET avg_typing_speed = ?, typing_variance = ?, login_count = login_count + 1
-                WHERE id = ?
+                UPDATE users SET avg_typing_speed = %s, typing_variance = %s, login_count = login_count + 1
+                WHERE id = %s
             """, (new_avg, new_var, user_id))
 
             conn.commit()
@@ -206,13 +207,13 @@ def update_user_baseline(user_id, typing_speed):
 def get_user_profile(user_id):
     """Fetch full user profile including last login data."""
     conn = get_connection()
-    cur = conn.cursor()
+    cur = _get_cursor(conn)
 
     try:
         cur.execute("""
             SELECT id, name, email, role, home_city, home_country,
                    login_count, is_face_verified, is_blocked, created_at
-            FROM users WHERE id = ?
+            FROM users WHERE id = %s
         """, (user_id,))
         user = cur.fetchone()
 
@@ -224,7 +225,7 @@ def get_user_profile(user_id):
         cur.execute("""
             SELECT city, country, ip_address, total_risk, decision, face_verdict,
                    face_confidence, timestamp
-            FROM login_logs WHERE user_id = ?
+            FROM login_logs WHERE user_id = %s
             ORDER BY timestamp DESC LIMIT 1
         """, (user_id,))
         last_log = cur.fetchone()
@@ -232,8 +233,7 @@ def get_user_profile(user_id):
         # Determine security status
         cur.execute("""
             SELECT COUNT(*) as cnt FROM login_logs
-            WHERE user_id = ? AND decision IN ('FLAG', 'BLOCK')
-            ORDER BY timestamp DESC LIMIT 5
+            WHERE user_id = %s AND decision IN ('FLAG', 'BLOCK')
         """, (user_id,))
         suspicious_count = cur.fetchone()['cnt']
 
@@ -255,7 +255,7 @@ def get_user_profile(user_id):
             'login_count': user['login_count'] or 0,
             'is_face_verified': bool(user['is_face_verified']),
             'is_blocked': bool(user['is_blocked']),
-            'created_at': user['created_at'],
+            'created_at': str(user['created_at']),
             'security_status': security_status,
         }
 
@@ -268,7 +268,7 @@ def get_user_profile(user_id):
                 'decision': last_log['decision'],
                 'face_verdict': last_log['face_verdict'],
                 'face_confidence': last_log['face_confidence'],
-                'timestamp': last_log['timestamp'],
+                'timestamp': str(last_log['timestamp']),
             }
 
         return profile, None

@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 import json
 from api.utils.helpers import admin_required
-from api.database import get_connection
+from api.database import get_connection, _get_cursor
 
 admin_bp = Blueprint('admin', __name__)
 
@@ -16,7 +16,7 @@ def get_login_logs():
         offset = (page - 1) * limit
 
         conn = get_connection()
-        cur = conn.cursor()
+        cur = _get_cursor(conn)
 
         if status_filter in ('ALLOW', 'FLAG', 'BLOCK'):
             cur.execute("""
@@ -24,8 +24,8 @@ def get_login_logs():
                        typing_speed, device_risk, location_risk, behavior_risk, face_risk,
                        total_risk, decision, face_verdict, face_confidence,
                        face_image_path, is_suspicious, timestamp
-                FROM login_logs WHERE decision = ?
-                ORDER BY timestamp DESC LIMIT ? OFFSET ?
+                FROM login_logs WHERE decision = %s
+                ORDER BY timestamp DESC LIMIT %s OFFSET %s
             """, (status_filter, limit, offset))
         else:
             cur.execute("""
@@ -33,13 +33,13 @@ def get_login_logs():
                        typing_speed, device_risk, location_risk, behavior_risk, face_risk,
                        total_risk, decision, face_verdict, face_confidence,
                        face_image_path, is_suspicious, timestamp
-                FROM login_logs ORDER BY timestamp DESC LIMIT ? OFFSET ?
+                FROM login_logs ORDER BY timestamp DESC LIMIT %s OFFSET %s
             """, (limit, offset))
 
         rows = cur.fetchall()
 
         if status_filter in ('ALLOW', 'FLAG', 'BLOCK'):
-            cur.execute("SELECT COUNT(*) as cnt FROM login_logs WHERE decision = ?", (status_filter,))
+            cur.execute("SELECT COUNT(*) as cnt FROM login_logs WHERE decision = %s", (status_filter,))
         else:
             cur.execute("SELECT COUNT(*) as cnt FROM login_logs")
         total = cur.fetchone()['cnt']
@@ -57,7 +57,7 @@ def get_login_logs():
             'face_confidence': r['face_confidence'],
             'face_image_path': r['face_image_path'],
             'is_suspicious': bool(r['is_suspicious']),
-            'timestamp': r['timestamp']
+            'timestamp': str(r['timestamp'])
         } for r in rows]
 
         return jsonify({
@@ -73,7 +73,7 @@ def get_login_logs():
 def get_stats():
     try:
         conn = get_connection()
-        cur = conn.cursor()
+        cur = _get_cursor(conn)
 
         cur.execute("SELECT COUNT(*) as cnt FROM login_logs")
         total = cur.fetchone()['cnt']
@@ -118,7 +118,7 @@ def get_stats():
             'decision': r['decision'], 'city': r['city'], 'country': r['country'],
             'face_verdict': r['face_verdict'], 'face_confidence': r['face_confidence'],
             'is_suspicious': bool(r['is_suspicious']),
-            'timestamp': r['timestamp']
+            'timestamp': str(r['timestamp'])
         } for r in cur.fetchall()]
 
         conn.close()
@@ -149,7 +149,7 @@ def get_stats():
 def get_users():
     try:
         conn = get_connection()
-        cur = conn.cursor()
+        cur = _get_cursor(conn)
         cur.execute("""
             SELECT id, name, email, role, is_blocked, home_city, home_country,
                    login_count, is_face_verified, face_attributes_json, created_at
@@ -169,7 +169,7 @@ def get_users():
             'login_count': r['login_count'],
             'is_face_verified': bool(r['is_face_verified']),
             'face_attributes': json.loads(r['face_attributes_json'] or '{}'),
-            'created_at': r['created_at']
+            'created_at': str(r['created_at'])
         } for r in rows]
 
         return jsonify({'users': users}), 200
@@ -182,9 +182,9 @@ def get_users():
 def toggle_block_user(user_id):
     try:
         conn = get_connection()
-        cur = conn.cursor()
+        cur = _get_cursor(conn)
 
-        cur.execute("SELECT role, is_blocked FROM users WHERE id = ?", (user_id,))
+        cur.execute("SELECT role, is_blocked FROM users WHERE id = %s", (user_id,))
         row = cur.fetchone()
 
         if not row:
@@ -195,7 +195,7 @@ def toggle_block_user(user_id):
             return jsonify({"error": "Cannot block admin users"}), 403
 
         new_status = 0 if row['is_blocked'] else 1
-        cur.execute("UPDATE users SET is_blocked = ? WHERE id = ?", (new_status, user_id))
+        cur.execute("UPDATE users SET is_blocked = %s WHERE id = %s", (new_status, user_id))
         conn.commit()
         conn.close()
 
@@ -213,9 +213,9 @@ def delete_user(user_id):
     """Permanently delete a user and all associated logs."""
     try:
         conn = get_connection()
-        cur = conn.cursor()
+        cur = _get_cursor(conn)
 
-        cur.execute("SELECT role FROM users WHERE id = ?", (user_id,))
+        cur.execute("SELECT role FROM users WHERE id = %s", (user_id,))
         row = cur.fetchone()
 
         if not row:
@@ -226,7 +226,7 @@ def delete_user(user_id):
             return jsonify({"error": "Cannot delete admin users"}), 403
 
         # Delete user (login_logs will cascade delete because of ON DELETE CASCADE in schema)
-        cur.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
         conn.commit()
         conn.close()
 
@@ -241,15 +241,15 @@ def get_user_logs(user_id):
     """Return all login logs for a specific user (admin view)."""
     try:
         conn = get_connection()
-        cur = conn.cursor()
+        cur = _get_cursor(conn)
         limit = int(request.args.get('limit', 30))
 
         cur.execute("""
             SELECT id, email, ip_address, city, country, device_risk, location_risk,
                    behavior_risk, face_risk, total_risk, decision, face_verdict,
                    face_confidence, face_image_path, is_suspicious, timestamp
-            FROM login_logs WHERE user_id = ?
-            ORDER BY timestamp DESC LIMIT ?
+            FROM login_logs WHERE user_id = %s
+            ORDER BY timestamp DESC LIMIT %s
         """, (user_id, limit))
         rows = cur.fetchall()
         conn.close()
@@ -263,7 +263,7 @@ def get_user_logs(user_id):
             'face_verdict': r['face_verdict'], 'face_confidence': r['face_confidence'],
             'face_image_path': r['face_image_path'],
             'is_suspicious': bool(r['is_suspicious']),
-            'timestamp': r['timestamp']
+            'timestamp': str(r['timestamp'])
         } for r in rows]
 
         return jsonify({'logs': logs, 'user_id': user_id}), 200

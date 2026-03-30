@@ -1,31 +1,71 @@
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import bcrypt
 import os
+from urllib.parse import urlparse
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'quantumshield.db')
+# PostgreSQL connection URL — set via environment variable or use default
+DATABASE_URL = os.environ.get(
+    'DATABASE_URL',
+    'postgresql://postgres:postgres@localhost:5432/quantumshield'
+)
+
+
+def _ensure_database_exists(url=None):
+    """Auto-create the PostgreSQL database if it doesn't exist."""
+    url = url or DATABASE_URL
+    parsed = urlparse(url)
+    db_name = parsed.path.lstrip('/')  # e.g. 'quantumshield'
+
+    # Connect to default 'postgres' database to check/create ours
+    admin_url = f"{parsed.scheme}://{parsed.netloc}/postgres"
+    try:
+        conn = psycopg2.connect(admin_url)
+        conn.autocommit = True  # CREATE DATABASE can't run inside a transaction
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
+        if not cur.fetchone():
+            cur.execute(f'CREATE DATABASE "{db_name}"')
+            print(f"[DB] Created PostgreSQL database: {db_name}")
+        conn.close()
+    except Exception as e:
+        print(f"[DB] Could not auto-create database (may already exist): {e}")
+
 
 def get_connection():
-    """Get a SQLite database connection."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row  # Access columns by name
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    """Get a PostgreSQL database connection."""
+    conn = psycopg2.connect(DATABASE_URL)
     return conn
+
+
+def _get_cursor(conn):
+    """Return a cursor that returns rows as dicts."""
+    return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
 
 def _column_exists(cur, table, column):
     """Check if a column exists in a table (for migrations)."""
-    cur.execute(f"PRAGMA table_info({table})")
-    return any(row[1] == column for row in cur.fetchall())
+    cur.execute("""
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = %s AND column_name = %s
+    """, (table, column))
+    return cur.fetchone() is not None
+
 
 def init_db(database_url=None):
     """Initialize database tables if they don't exist, and migrate existing ones."""
-    conn = sqlite3.connect(DB_PATH)
+    url = database_url or DATABASE_URL
+
+    # Auto-create the database if it doesn't exist
+    _ensure_database_exists(url)
+
+    conn = psycopg2.connect(url)
     cur = conn.cursor()
 
     # ── Create users table ─────────────────────────────────────────
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             name TEXT DEFAULT '',
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
@@ -57,7 +97,7 @@ def init_db(database_url=None):
     # ── Create login_logs table ────────────────────────────────────
     cur.execute("""
         CREATE TABLE IF NOT EXISTS login_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
             email TEXT DEFAULT '',
             ip_address TEXT DEFAULT '',
@@ -94,15 +134,16 @@ def init_db(database_url=None):
             print(f"[DB] Migrated login_logs: added column '{col}'")
 
     # ── Seed admin user if not exists ──────────────────────────────
-    cur.execute("SELECT id FROM users WHERE email = ?", ('admin@gmail.com',))
+    cur.execute("SELECT id FROM users WHERE email = %s", ('admin@quantumshield.io',))
     if not cur.fetchone():
-        admin_hash = bcrypt.hashpw('admin@123'.encode('utf-8'), bcrypt.gensalt(rounds=12)).decode('utf-8')
+        # Password: QS@dmin2024!
+        admin_hash = bcrypt.hashpw('QS@dmin2024!'.encode('utf-8'), bcrypt.gensalt(rounds=12)).decode('utf-8')
         cur.execute("""
             INSERT INTO users (name, email, password_hash, role, is_face_verified, face_attributes_json)
-            VALUES (?, ?, ?, 'admin', 1, '{}')
-        """, ('Admin', 'admin@gmail.com', admin_hash))
-        print("[DB] Admin user seeded: admin@gmail.com / admin@123")
+            VALUES (%s, %s, %s, 'admin', 1, '{}')
+        """, ('System Administrator', 'admin@quantumshield.io', admin_hash))
+        print("[DB] Admin user seeded: admin@quantumshield.io / QS@dmin2024!")
 
     conn.commit()
     conn.close()
-    print(f"[DB] SQLite database ready at: {DB_PATH}")
+    print(f"[DB] PostgreSQL database ready at: {url}")
