@@ -7,6 +7,8 @@
 ![React](https://img.shields.io/badge/react-18+-61DAFB.svg)
 ![TensorFlow](https://img.shields.io/badge/tensorflow-2.16+-FF6F00.svg)
 
+🔬 **Now with Explainable AI (XAI) forensic breakdown** — every detection result includes a detailed parameter-level analysis (facial blending, lighting, texture) with auto-generated PDF forensic reports.
+
 ---
 
 ## 🌟 Key Features
