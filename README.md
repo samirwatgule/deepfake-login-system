@@ -123,8 +123,8 @@ npm run dev
 
 When you first run the application, an admin account is automatically created:
 
-- **Email:** `admin@gamil.com`
-- **Password:** `Admin@123`
+- **Email:** `admin@quantumshield.io`
+- **Password:** `QS@dmin2024!`
 - **Login URL:** `/admin-login`
 
 ---
