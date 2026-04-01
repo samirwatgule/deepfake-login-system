@@ -647,6 +647,7 @@ a:hover { color: var(--accent-light); }
 }
 
 .stats-grid-6 { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.stats-grid-4 { grid-template-columns: repeat(4, 1fr); }
 
 .stat-card {
   background: var(--glass);
@@ -868,6 +869,65 @@ a:hover { color: var(--accent-light); }
   background: var(--warning-bg);
   color: var(--warning);
   white-space: nowrap;
+}
+
+.face-verdict.face_mismatch { background: rgba(239,68,68,0.15); color: #fca5a5; }
+
+/* ── Alerts List ──────────────────────────────────────── */
+.alerts-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.alert-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 22px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  transition: background 0.15s;
+}
+
+.alert-item:last-child { border-bottom: none; }
+.alert-item:hover { background: rgba(255,255,255,0.03); }
+
+.alert-icon {
+  font-size: 1.4rem;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.05);
+}
+
+.alert-item.alert-high_risk .alert-icon { background: rgba(239,68,68,0.15); }
+.alert-item.alert-deepfake .alert-icon { background: rgba(168,85,247,0.15); }
+.alert-item.alert-travel .alert-icon { background: rgba(245,158,11,0.15); }
+.alert-item.alert-multi_ip .alert-icon { background: rgba(245,158,11,0.15); }
+.alert-item.alert-face_mismatch .alert-icon { background: rgba(239,68,68,0.15); }
+
+.alert-content { flex: 1; min-width: 0; }
+
+.alert-message {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+
+.alert-detail {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.alert-time {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* ── Decision Donut Chart ──────────────────────────────── */
@@ -1165,6 +1225,7 @@ a:hover { color: var(--accent-light); }
   .security-status-badge { align-self: flex-start; }
 
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .stats-grid-4 { grid-template-columns: repeat(2, 1fr); }
   .dashboard-grid { grid-template-columns: 1fr; }
 
   .admin-dash-header { flex-direction: column; gap: 14px; }

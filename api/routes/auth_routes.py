@@ -119,6 +119,9 @@ def register():
 @auth_bp.route('/api/login', methods=['POST'])
 def login():
     try:
+        import time as _time
+        _login_start = _time.time()
+
         data = request.get_json()
         if not data:
             return jsonify({"error": "Request body is required"}), 400
@@ -129,25 +132,110 @@ def login():
         device_info = data.get('deviceInfo', {})
         typing_speed = data.get('typingSpeed', 0)
 
+        print(f"\n{'='*65}")
+        print(f"  🔐 LOGIN ATTEMPT — {email}")
+        print(f"  ⏱  Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        print(f"{'='*65}")
+
+        # Step 1: Password Authentication
+        print(f"\n  [1/5] 🔑 Password Authentication...")
         user, error = authenticate_user(email, password)
         if error:
+            print(f"        ❌ FAILED: {error}")
+            print(f"{'='*65}\n")
             return jsonify({"error": error}), 401
+        print(f"        ✅ Password verified for user #{user['id']} ({user.get('name', 'N/A')})")
 
+        # Step 2: Device & Location Analysis
+        print(f"\n  [2/5] 🌍 Device & Location Analysis...")
         client_ip = get_client_ip()
         coords = data.get('coords')
         current_location = get_geolocation(client_ip, coords)
+        # Use resolved public IP if available (localhost → real IP)
+        resolved_ip = current_location.get('ip', client_ip)
+        print(f"        IP: {resolved_ip}")
+        print(f"        Location: {current_location.get('city', '?')}, {current_location.get('country', '?')}")
 
         current_device_hash = compute_device_hash(device_info)
         device_result = compute_device_risk(user, current_device_hash, current_location)
+        print(f"        Device Risk:   {device_result['device_risk']}/20")
+        print(f"        Location Risk: {device_result['location_risk']}/25")
 
+        # Step 3: Behavior Analysis
+        print(f"\n  [3/5] ⌨️  Behavior Analysis...")
         device_changed = device_result['device_risk'] > 0
         location_changed = device_result['location_risk'] > 0
         behavior_result = compute_behavior_score(
             user, float(typing_speed) if typing_speed else 0.0,
             device_changed, location_changed
         )
+        print(f"        Typing Speed: {typing_speed} ms")
+        print(f"        Behavior Risk: {behavior_result.get('behavior_risk', 0)}/30")
 
+        # Step 4: Face AI Analysis (Identity + Deepfake)
+        print(f"\n  [4/5] 🤖 Face AI Processing...")
+        _face_start = _time.time()
         face_result = analyze_face(face_image, user.get('face_embedding', ''))
+        _face_time = _time.time() - _face_start
+        print(f"        Model Processing Time: {_face_time:.2f}s")
+        print(f"        Face Verdict:    {face_result.get('face_verdict', 'N/A')}")
+        print(f"        Face Confidence: {face_result.get('face_confidence', 0)*100:.1f}%")
+        print(f"        Face Risk:       {face_result.get('face_risk', 0)}/30")
+        for detail in face_result.get('details', []):
+            print(f"        → {detail}")
+
+        # ── HARD BLOCK: Face does not match registered user ──
+        if face_result.get('face_verdict') == 'FACE_MISMATCH':
+            print(f"\n  ❌ FACE MISMATCH — BLOCKING LOGIN")
+            print(f"{'='*65}\n")
+            login_face_path = ''
+            if face_image:
+                try:
+                    import base64, uuid
+                    header, encoded = face_image.split(",", 1) if "," in face_image else ("", face_image)
+                    img_data = base64.b64decode(encoded)
+                    filename = f"login_{uuid.uuid4()}.jpg"
+                    upload_dir = os.path.join(
+                        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                        'api', 'static', 'uploads', 'login_attempts'
+                    )
+                    os.makedirs(upload_dir, exist_ok=True)
+                    with open(os.path.join(upload_dir, filename), "wb") as f:
+                        f.write(img_data)
+                    login_face_path = f"api/static/uploads/login_attempts/{filename}"
+                except Exception:
+                    pass
+
+            blocked_risk = {
+                'device_risk': 0, 'location_risk': 0, 'behavior_risk': 0,
+                'face_risk': 30.0, 'total_risk': 100.0, 'decision': 'BLOCK',
+                'details': face_result.get('details', [])
+            }
+            current_lat = coords.get('latitude') if coords else 0.0
+            current_lon = coords.get('longitude') if coords else 0.0
+            log_login_attempt(
+                user_id=user['id'], email=email, ip_address=resolved_ip,
+                device_info=json.dumps(device_info),
+                city=current_location.get('city', 'Unknown'),
+                country=current_location.get('country', 'Unknown'),
+                latitude=current_lat or 0.0,
+                longitude=current_lon or 0.0,
+                typing_speed=float(typing_speed) if typing_speed else 0.0,
+                risk_result=blocked_risk,
+                face_verdict='FACE_MISMATCH',
+                face_confidence=face_result.get('face_confidence', 0.0),
+                face_image_path=login_face_path,
+                is_suspicious=1
+            )
+            return jsonify({
+                "error": "Face verification failed — the face does not match the registered user",
+                "face_verdict": "FACE_MISMATCH",
+                "face_confidence": face_result.get('face_confidence', 0.0),
+                "details": face_result.get('details', [])
+            }), 401
+
+        # Step 5: Risk Engine — Final Decision
+        print(f"\n  [5/5] ⚖️  Risk Engine — Computing Final Score...")
         risk_result = compute_total_risk(device_result, behavior_result, face_result)
 
         # Impossible travel check
@@ -161,6 +249,7 @@ def login():
             risk_result['total_risk'] = min(risk_result['total_risk'] + 20, 100)
             if risk_result['decision'] == 'ALLOW':
                 risk_result['decision'] = 'FLAG'
+            print(f"        ⚠️  Impossible travel detected!")
 
         token = generate_token(user['id'], user['email'], user.get('role', 'user'))
 
@@ -184,10 +273,10 @@ def login():
                     f.write(img_data)
                 login_face_path = f"api/static/uploads/login_attempts/{filename}"
             except Exception as e:
-                print(f"[AUTH] Failed to save login face: {e}")
+                print(f"        ⚠️  Failed to save login face: {e}")
 
         log_login_attempt(
-            user_id=user['id'], email=email, ip_address=client_ip,
+            user_id=user['id'], email=email, ip_address=resolved_ip,
             device_info=json.dumps(device_info),
             city=current_location.get('city', 'Unknown'),
             country=current_location.get('country', 'Unknown'),
@@ -200,6 +289,24 @@ def login():
             face_image_path=login_face_path,
             is_suspicious=1 if is_suspicious else 0
         )
+
+        # ── Final Summary ──
+        _total_time = _time.time() - _login_start
+        decision = risk_result['decision']
+        decision_icon = '✅' if decision == 'ALLOW' else ('⚠️' if decision == 'FLAG' else '🚫')
+        print(f"\n  ┌─────────────────────────────────────────────┐")
+        print(f"  │  RESULT: {decision_icon} {decision:8s}                          │")
+        print(f"  ├─────────────────────────────────────────────┤")
+        print(f"  │  Device Risk:   {risk_result['device_risk']:5.1f} / 20              │")
+        print(f"  │  Location Risk: {risk_result['location_risk']:5.1f} / 25              │")
+        print(f"  │  Behavior Risk: {risk_result['behavior_risk']:5.1f} / 30              │")
+        print(f"  │  Face AI Risk:  {risk_result['face_risk']:5.1f} / 30              │")
+        print(f"  │  ──────────────────────────────────         │")
+        print(f"  │  TOTAL RISK:    {risk_result['total_risk']:5.1f} / 100             │")
+        print(f"  │  Face Verdict:  {face_result.get('face_verdict', 'N/A'):10s}                │")
+        print(f"  │  Processing:    {_total_time:.2f}s                        │")
+        print(f"  └─────────────────────────────────────────────┘")
+        print(f"{'='*65}\n")
 
         return jsonify({
             "message": "Authentication complete",

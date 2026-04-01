@@ -78,13 +78,33 @@ def get_geolocation(ip_address, coords=None):
 
     geo_url = os.environ.get('GEO_API_URL', 'https://ipapi.co')
 
-    # Skip for localhost / private IPs
+    # For localhost / private IPs: try to get real public IP for geolocation
     if (
         ip_address in ('127.0.0.1', 'localhost', '::1', '')
         or ip_address.startswith('192.168.')
         or ip_address.startswith('10.')
         or ip_address.startswith('172.')
     ):
+        try:
+            # Fetch real public IP
+            pub_resp = requests.get('https://api.ipify.org?format=json', timeout=3)
+            if pub_resp.status_code == 200:
+                public_ip = pub_resp.json().get('ip', '')
+                if public_ip:
+                    geo_resp = requests.get(
+                        f"{geo_url}/{public_ip}/json/",
+                        timeout=5,
+                        headers={'User-Agent': 'QuantumShield/1.0'}
+                    )
+                    if geo_resp.status_code == 200:
+                        data = geo_resp.json()
+                        return {
+                            'city': data.get('city', 'Unknown'),
+                            'country': data.get('country_name', 'Unknown'),
+                            'ip': public_ip
+                        }
+        except Exception as e:
+            print(f"[GEO] Public IP lookup failed: {e}")
         return {'city': 'Local', 'country': 'Local', 'ip': ip_address}
 
     try:

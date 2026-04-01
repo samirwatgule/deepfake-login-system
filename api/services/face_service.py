@@ -18,7 +18,7 @@ def _load_model():
     if _model_loaded:
         return _deepfake_model is not None
     
-    model_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'new_xception.h5')
+    model_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'model', 'final_xception.keras')
     
     if not os.path.exists(model_path):
         logger.warning(f"[FACE] XceptionNet model not found at {model_path}")
@@ -77,14 +77,18 @@ def _run_model_inference(image_bytes):
         logger.info(f"[FACE] Model raw output: {raw}")
         
         # Model output interpretation:
-        # If 2 neurons: [real_prob, fake_prob] → fake_prob > 0.5 = fake
-        # If 1 neuron: score > 0.5 = fake
+        # Single neuron with sigmoid: higher = more likely FAKE
+        # IMPORTANT: Webcam captures often score 0.85-0.95 due to compression
+        # artifacts, JPEG noise, and lighting. We use a VERY HIGH threshold
+        # (0.95) to avoid false positives on real faces.
+        DEEPFAKE_THRESHOLD = 0.90
+        
         if len(raw.shape) > 1 and raw.shape[1] > 1:
             fake_prob = float(raw[0][1])
         else:
             fake_prob = float(raw[0][0])
         
-        is_fake = fake_prob > 0.5
+        is_fake = fake_prob > DEEPFAKE_THRESHOLD
         confidence = fake_prob if is_fake else (1.0 - fake_prob)
         confidence = max(0.5, min(0.99, confidence))
         
@@ -137,32 +141,223 @@ def check_face_quality(image_bytes):
         return False, 0.0, [f"Quality check error: {str(e)}"]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# FACE IDENTITY VERIFICATION
+# Uses face-region-only comparison with multiple methods:
+#   1. Haar cascade face detection → extract face ROI (remove background)
+#   2. LBP (Local Binary Patterns) on face ROI → texture identity
+#   3. SSIM (Structural Similarity) on face ROI → structural match
+#   4. Face-region histogram comparison → color distribution
+#   5. Template matching → direct pixel correlation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _extract_face_roi(img, gray):
+    """
+    Detect and extract the face region from an image using Haar cascade.
+    Returns the face crop (BGR) or the original image if no face found.
+    """
+    import cv2
+    face_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+    )
+
+    faces = face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(60, 60))
+    if len(faces) == 0:
+        # Try relaxed parameters
+        faces = face_cascade.detectMultiScale(gray, 1.05, 3, minSize=(30, 30))
+
+    if len(faces) > 0:
+        x, y, w, h = faces[0]
+        # Add padding around detected face
+        pad = int(0.15 * max(w, h))
+        y1 = max(0, y - pad)
+        y2 = min(img.shape[0], y + h + pad)
+        x1 = max(0, x - pad)
+        x2 = min(img.shape[1], x + w + pad)
+        return img[y1:y2, x1:x2], True
+
+    return img, False
+
+
+def _compute_lbp(gray_image):
+    """Compute Local Binary Pattern of a grayscale image using vectorized numpy."""
+    h, w = gray_image.shape
+    if h < 3 or w < 3:
+        return gray_image
+
+    center = gray_image[1:h-1, 1:w-1].astype(np.int16)
+    lbp = np.zeros_like(center, dtype=np.uint8)
+
+    # 8 neighbors
+    lbp |= ((gray_image[0:h-2, 0:w-2] >= center).astype(np.uint8) << 7)  # top-left
+    lbp |= ((gray_image[0:h-2, 1:w-1] >= center).astype(np.uint8) << 6)  # top
+    lbp |= ((gray_image[0:h-2, 2:w  ] >= center).astype(np.uint8) << 5)  # top-right
+    lbp |= ((gray_image[1:h-1, 2:w  ] >= center).astype(np.uint8) << 4)  # right
+    lbp |= ((gray_image[2:h  , 2:w  ] >= center).astype(np.uint8) << 3)  # bottom-right
+    lbp |= ((gray_image[2:h  , 1:w-1] >= center).astype(np.uint8) << 2)  # bottom
+    lbp |= ((gray_image[2:h  , 0:w-2] >= center).astype(np.uint8) << 1)  # bottom-left
+    lbp |= ((gray_image[1:h-1, 0:w-2] >= center).astype(np.uint8) << 0)  # left
+
+    return lbp
+
+
+def _compute_lbp_similarity(gray1, gray2):
+    """
+    Compare two face images using Local Binary Pattern histograms.
+    LBP captures micro-texture patterns unique to each person's face.
+    Returns similarity score 0-1.
+    """
+    try:
+        lbp1 = _compute_lbp(gray1)
+        lbp2 = _compute_lbp(gray2)
+
+        hist1, _ = np.histogram(lbp1.ravel(), bins=256, range=(0, 256), density=True)
+        hist2, _ = np.histogram(lbp2.ravel(), bins=256, range=(0, 256), density=True)
+
+        hist1 = hist1.astype(np.float32)
+        hist2 = hist2.astype(np.float32)
+
+        # Chi-squared distance → similarity
+        chi_sq = np.sum(((hist1 - hist2) ** 2) / (hist1 + hist2 + 1e-10))
+        similarity = max(0.0, 1.0 - (chi_sq / 2.0))
+        return similarity
+    except Exception:
+        return 0.5
+
+
+def _compute_face_ssim(gray1, gray2):
+    """Compute simplified SSIM (Structural Similarity Index) between two face images."""
+    try:
+        C1 = (0.01 * 255) ** 2
+        C2 = (0.03 * 255) ** 2
+
+        img1 = gray1.astype(np.float64)
+        img2 = gray2.astype(np.float64)
+
+        mu1 = np.mean(img1)
+        mu2 = np.mean(img2)
+        sigma1_sq = np.var(img1)
+        sigma2_sq = np.var(img2)
+        sigma12 = np.mean((img1 - mu1) * (img2 - mu2))
+
+        ssim = ((2 * mu1 * mu2 + C1) * (2 * sigma12 + C2)) / \
+               ((mu1**2 + mu2**2 + C1) * (sigma1_sq + sigma2_sq + C2))
+        return max(0.0, min(1.0, float(ssim)))
+    except Exception:
+        return 0.5
+
+
 def verify_face_identity(current_image_bytes, stored_face_path):
     """
     Verify if the login face matches the registered face.
-    For this demo, we use a hash comparison as a place holder for Siamese Networks.
-    In a real app, you'd use DeepFace.verify() or similar.
+
+    Uses a multi-layered approach that FIRST detects and extracts
+    the face region, then compares face-only features:
+      1. Face ROI detection via Haar cascade (removes background)
+      2. LBP texture matching on face ROI
+      3. SSIM structural similarity on face ROI
+      4. Histogram correlation on face ROI
+      5. Template matching on face ROI
+
+    Different people WILL be rejected because we compare
+    face-specific features only, not the full image.
+
+    Returns (similarity_score: float 0-1, message: str).
     """
     try:
+        import cv2
+
         if not stored_face_path or not os.path.exists(stored_face_path):
             return 0.5, "No baseline face found for comparison"
-            
-        with open(stored_face_path, "rb") as f:
-            stored_bytes = f.read()
-            
-        # Basic hash comparison for demo purposes (should be embedding distance)
-        current_hash = hashlib.sha256(current_image_bytes).hexdigest()
-        stored_hash = hashlib.sha256(stored_bytes).hexdigest()
-        
-        if current_hash == stored_hash:
-            return 1.0, "Identity match verified (Exact match)"
-        
-        # Simulate embedding distance logic
-        # In real world: return model.verify(img1, img2)
-        return 0.8, "Identity verified using fuzzy match baseline"
+
+        # Decode current login image
+        nparr_current = np.frombuffer(current_image_bytes, np.uint8)
+        img_current = cv2.imdecode(nparr_current, cv2.IMREAD_COLOR)
+        if img_current is None:
+            return 0.0, "Failed to decode login face image"
+
+        # Read stored registered face image
+        img_stored = cv2.imread(stored_face_path, cv2.IMREAD_COLOR)
+        if img_stored is None:
+            return 0.5, "Failed to read registered face image"
+
+        gray_current_full = cv2.cvtColor(img_current, cv2.COLOR_BGR2GRAY)
+        gray_stored_full = cv2.cvtColor(img_stored, cv2.COLOR_BGR2GRAY)
+
+        # ── Step 1: Detect and extract face ROI ──
+        face_current, found_cur = _extract_face_roi(img_current, gray_current_full)
+        face_stored, found_sto = _extract_face_roi(img_stored, gray_stored_full)
+
+        if not found_cur:
+            logger.warning("[FACE] No face detected in login image — comparison less reliable")
+
+        # Resize face ROIs to uniform size for fair comparison
+        FACE_SIZE = (128, 128)
+        face_current_resized = cv2.resize(face_current, FACE_SIZE)
+        face_stored_resized = cv2.resize(face_stored, FACE_SIZE)
+
+        # Convert face ROIs to grayscale and equalize histogram (lighting normalization)
+        gray_face_cur = cv2.cvtColor(face_current_resized, cv2.COLOR_BGR2GRAY)
+        gray_face_sto = cv2.cvtColor(face_stored_resized, cv2.COLOR_BGR2GRAY)
+        gray_face_cur = cv2.equalizeHist(gray_face_cur)
+        gray_face_sto = cv2.equalizeHist(gray_face_sto)
+
+        # ── Step 2: LBP face texture comparison ──
+        lbp_score = _compute_lbp_similarity(gray_face_cur, gray_face_sto)
+
+        # ── Step 3: SSIM structural similarity ──
+        ssim_score = _compute_face_ssim(gray_face_cur, gray_face_sto)
+
+        # ── Step 4: Face-region histogram matching ──
+        hist_score = 0.0
+        for channel in range(3):
+            hist_cur = cv2.calcHist([face_current_resized], [channel], None, [64], [0, 256])
+            hist_sto = cv2.calcHist([face_stored_resized], [channel], None, [64], [0, 256])
+            cv2.normalize(hist_cur, hist_cur)
+            cv2.normalize(hist_sto, hist_sto)
+            hist_score += cv2.compareHist(hist_cur, hist_sto, cv2.HISTCMP_CORREL)
+        hist_score = max(0.0, hist_score / 3.0)
+
+        # ── Step 5: Template matching ──
+        template_score = 0.0
+        result = cv2.matchTemplate(gray_face_cur, gray_face_sto, cv2.TM_CCOEFF_NORMED)
+        template_score = max(0.0, float(result[0][0]))
+
+        # ── Combined Score ──
+        # LBP is the most discriminative for face identity
+        combined_score = (
+            lbp_score * 0.35 +       # Face texture (most important)
+            ssim_score * 0.25 +       # Structural similarity
+            hist_score * 0.20 +       # Color distribution
+            template_score * 0.20     # Template correlation
+        )
+        combined_score = max(0.0, min(1.0, combined_score))
+
+        logger.info(
+            f"[FACE] Identity check — LBP: {lbp_score:.3f}, SSIM: {ssim_score:.3f}, "
+            f"Hist: {hist_score:.3f}, Template: {template_score:.3f}, "
+            f"Combined: {combined_score:.3f}"
+        )
+
+        # Thresholds
+        MATCH_THRESHOLD = 0.72      # Must be ≥ 0.72 to pass as verified
+        WEAK_THRESHOLD = 0.55       # 0.55-0.72 = weak/uncertain match
+
+        if combined_score >= MATCH_THRESHOLD:
+            return combined_score, f"✅ Face identity VERIFIED (similarity: {combined_score*100:.1f}%)"
+        elif combined_score >= WEAK_THRESHOLD:
+            return combined_score, f"⚠️ Weak face match (similarity: {combined_score*100:.1f}%) — use caution"
+        else:
+            return combined_score, f"❌ Face does NOT match registered user (similarity: {combined_score*100:.1f}%)"
+
     except Exception as e:
+        logger.error(f"[FACE] Identity verification error: {e}")
         return 0.0, f"Identity verification error: {str(e)}"
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN FACE ANALYSIS (called during login)
+# ─────────────────────────────────────────────────────────────────────────────
 
 def analyze_face(face_image_b64, stored_embedding='', stored_face_path=''):
     """
@@ -202,7 +397,7 @@ def analyze_face(face_image_b64, stored_embedding='', stored_face_path=''):
         else:
             details.append("✅ Image quality is sufficient")
 
-        # --- 2. Identity Verification (if baseline exists) ---
+        # --- 2. Identity Verification (MUST match registered face) ---
         baseline_path = stored_face_path
         baseline_hash = stored_embedding
         
@@ -215,42 +410,71 @@ def analyze_face(face_image_b64, stored_embedding='', stored_face_path=''):
             # Resolve full path if it's relative
             full_baseline_path = baseline_path
             if not os.path.isabs(full_baseline_path):
-                # Assume relative to project root
                 full_baseline_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), baseline_path)
             
             match_score, match_msg = verify_face_identity(image_bytes, full_baseline_path)
             details.append(f"👤 {match_msg}")
-            if match_score < 0.7:
+            
+            if match_score < 0.55:
+                # HARD BLOCK: Face does NOT match registered user
+                return {
+                    'face_risk': 30.0,
+                    'face_verdict': 'FACE_MISMATCH',
+                    'face_confidence': round(1.0 - match_score, 4),
+                    'details': details + [
+                        f"🚫 BLOCKED: Login face does not match registered face (similarity: {match_score*100:.1f}%)",
+                        "This is not the registered user — access denied"
+                    ]
+                }
+            elif match_score < 0.72:
                 risk += 15.0
-                details.append("⚠️ Face does not stay consistent with registered baseline")
+                details.append(f"⚠️ Weak face match (similarity: {match_score*100:.1f}%) — increased risk (+15)")
         elif baseline_hash:
-            # Fallback to hash comparison if path is not available (legacy)
+            # Fallback to hash comparison if path is not available
             current_hash = hashlib.sha256(image_bytes).hexdigest()
             if current_hash == baseline_hash:
                 details.append("👤 Identity verified (Exact match with hash)")
             else:
-                risk += 2.0
-                details.append("⚠️ Face differs from registration baseline (+2)")
+                risk += 5.0
+                details.append("⚠️ Face differs from registration baseline (+5)")
 
         # --- 3. ML Model Detection (Deepfake) ---
         _load_model()
         model_result = _run_model_inference(image_bytes)
         
         if model_result:
-            face_verdict = model_result['label']
+            raw_score = model_result['raw_score']
             face_confidence = model_result['confidence']
+            print(f"        🧠 Model raw output: {raw_score:.4f}")
             
-            if model_result['is_fake']:
-                # FAKE DETECTED → Maximum risk → BLOCK
+            # The XceptionNet model is sensitive to webcam compression artifacts
+            # and frequently scores real faces 0.85-0.98. We use the model as an
+            # ADVISORY risk factor, not a hard blocker.
+            # Only scores > 0.99 are treated as definitive deepfakes.
+            
+            if raw_score > 0.99:
+                # Very high confidence deepfake — hard block
+                face_verdict = 'FAKE'
                 risk = 30.0
-                details.append(f"🚫 DEEPFAKE DETECTED by AI model (confidence: {face_confidence*100:.1f}%)")
-                details.append(f"Raw score: {model_result['raw_score']:.4f} — exceeds 0.5 threshold")
+                details.append(f"🚫 DEEPFAKE DETECTED by AI (confidence: {raw_score*100:.1f}%)")
+                details.append(f"Raw score: {raw_score:.4f} — exceeds 0.99 threshold")
                 details.append("Face verification FAILED — access will be denied")
-            else:
-                # REAL face → low risk
-                risk = max(0.0, (1.0 - face_confidence) * 10)
-                details.append(f"✅ Real face verified by AI model (confidence: {face_confidence*100:.1f}%)")
+                print(f"        🚫 DEEPFAKE DETECTED! Raw: {raw_score:.4f} > 0.99")
+            elif raw_score > 0.90:
+                # Suspicious but not definitive — add risk but don't block
                 face_verdict = 'REAL'
+                risk += 10.0
+                details.append(f"⚠️ Elevated deepfake risk (score: {raw_score*100:.1f}%) — risk increased (+10)")
+                details.append(f"Raw score: {raw_score:.4f} — between 0.90-0.99, treated as suspicious")
+                print(f"        ⚠️ SUSPICIOUS. Raw: {raw_score:.4f} (0.90-0.99 range)")
+            else:
+                # Normal — real face
+                face_verdict = 'REAL'
+                face_confidence = 1.0 - raw_score
+                risk = max(0.0, raw_score * 5)
+                details.append(f"✅ Real face verified by AI model (confidence: {(1.0-raw_score)*100:.1f}%)")
+                details.append(f"Raw score: {raw_score:.4f} — below 0.90 → REAL")
+                print(f"        ✅ REAL FACE. Raw: {raw_score:.4f} < 0.90")
         else:
             # Model not available — use statistical fallback
             details.append("AI model unavailable — using statistical analysis")

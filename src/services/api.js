@@ -19,15 +19,20 @@ api.interceptors.request.use((config) => {
     return config;
 });
 
-// Handle 401 responses (expired token)
+// Handle 401 responses (expired token) — only clear session for protected endpoints
 api.interceptors.response.use(
     (res) => res,
     (err) => {
         if (err.response?.status === 401) {
-            localStorage.removeItem('token');
-            localStorage.removeItem('email');
-            localStorage.removeItem('role');
-            localStorage.removeItem('name');
+            const url = err.config?.url || '';
+            // Don't clear session on login/register failures — only on protected API calls
+            const isAuthEndpoint = url.includes('/api/login') || url.includes('/api/register') || url.includes('/api/admin/login');
+            if (!isAuthEndpoint) {
+                localStorage.removeItem('token');
+                localStorage.removeItem('email');
+                localStorage.removeItem('role');
+                localStorage.removeItem('name');
+            }
         }
         return Promise.reject(err);
     }

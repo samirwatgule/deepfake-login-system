@@ -58,9 +58,11 @@ def register_user(email, password, device_info, location, typing_speed, face_ima
                 face_attributes_json = json.dumps(face_attributes)
 
                 # ENFORCE AI VERIFICATION ON REGISTRATION
+                # Note: Webcam captures often trigger false positives (compression
+                # artifacts, low resolution). Only block if confidence is very high.
                 from api.services.face_service import analyze_face
                 face_analysis = analyze_face(face_image_b64)
-                if face_analysis.get('face_verdict') == 'FAKE':
+                if face_analysis.get('face_verdict') == 'FAKE' and face_analysis.get('face_confidence', 0) >= 0.97:
                     conn.close()
                     return None, (
                         f"Registration rejected: Biometric identity verification failed. "

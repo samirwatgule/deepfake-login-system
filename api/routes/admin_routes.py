@@ -107,6 +107,18 @@ def get_stats():
         cur.execute("SELECT COUNT(*) as cnt FROM login_logs WHERE is_suspicious = 1")
         suspicious_logins = cur.fetchone()['cnt']
 
+        # ── NEW: Unique devices & locations ──
+        cur.execute("SELECT COUNT(DISTINCT device_info) as cnt FROM login_logs WHERE device_info IS NOT NULL AND device_info != ''")
+        unique_devices = cur.fetchone()['cnt']
+
+        cur.execute("SELECT COUNT(DISTINCT CONCAT(city, ',', country)) as cnt FROM login_logs WHERE city IS NOT NULL")
+        unique_locations = cur.fetchone()['cnt']
+
+        # ── NEW: High risk count ──
+        cur.execute("SELECT COUNT(*) as cnt FROM login_logs WHERE total_risk > 70")
+        high_risk_count = cur.fetchone()['cnt']
+
+        # ── Recent suspicious attempts ──
         cur.execute("""
             SELECT id, email, total_risk, decision, city, country,
                    face_verdict, face_confidence, is_suspicious, timestamp
@@ -119,6 +131,129 @@ def get_stats():
             'face_verdict': r['face_verdict'], 'face_confidence': r['face_confidence'],
             'is_suspicious': bool(r['is_suspicious']),
             'timestamp': str(r['timestamp'])
+        } for r in cur.fetchall()]
+
+        # ── NEW: Auto-generated alerts ──
+        alerts = []
+
+        # Alert: High risk logins (> 70)
+        cur.execute("""
+            SELECT email, total_risk, city, country, timestamp
+            FROM login_logs WHERE total_risk > 70
+            ORDER BY timestamp DESC LIMIT 5
+        """)
+        for r in cur.fetchall():
+            alerts.append({
+                'type': 'high_risk', 'icon': '🚨',
+                'message': f"High risk login: {r['email']} (risk: {r['total_risk']})",
+                'detail': f"{r['city']}, {r['country']}",
+                'timestamp': str(r['timestamp'])
+            })
+
+        # Alert: Deepfakes detected
+        cur.execute("""
+            SELECT email, face_confidence, timestamp
+            FROM login_logs WHERE face_verdict = 'FAKE'
+            ORDER BY timestamp DESC LIMIT 5
+        """)
+        for r in cur.fetchall():
+            alerts.append({
+                'type': 'deepfake', 'icon': '🤖',
+                'message': f"Deepfake detected: {r['email']}",
+                'detail': f"Confidence: {float(r['face_confidence'] or 0)*100:.1f}%",
+                'timestamp': str(r['timestamp'])
+            })
+
+        # Alert: Impossible travel
+        cur.execute("""
+            SELECT email, city, country, timestamp
+            FROM login_logs WHERE is_suspicious = 1
+            ORDER BY timestamp DESC LIMIT 5
+        """)
+        for r in cur.fetchall():
+            alerts.append({
+                'type': 'travel', 'icon': '✈️',
+                'message': f"Impossible travel: {r['email']}",
+                'detail': f"{r['city']}, {r['country']}",
+                'timestamp': str(r['timestamp'])
+            })
+
+        # Alert: Multiple attempts from same IP
+        cur.execute("""
+            SELECT ip_address, COUNT(*) as cnt
+            FROM login_logs WHERE decision = 'BLOCK'
+            GROUP BY ip_address HAVING COUNT(*) >= 3
+            ORDER BY cnt DESC LIMIT 5
+        """)
+        for r in cur.fetchall():
+            alerts.append({
+                'type': 'multi_ip', 'icon': '⚠️',
+                'message': f"Multiple blocked attempts from IP: {r['ip_address']}",
+                'detail': f"{r['cnt']} attempts",
+                'timestamp': ''
+            })
+
+        # Alert: Face mismatch attempts
+        cur.execute("""
+            SELECT email, city, country, timestamp
+            FROM login_logs WHERE face_verdict = 'FACE_MISMATCH'
+            ORDER BY timestamp DESC LIMIT 5
+        """)
+        for r in cur.fetchall():
+            alerts.append({
+                'type': 'face_mismatch', 'icon': '👤',
+                'message': f"Face mismatch: {r['email']}",
+                'detail': f"{r['city']}, {r['country']}",
+                'timestamp': str(r['timestamp'])
+            })
+
+        # Sort alerts by timestamp (most recent first)
+        alerts.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+
+        # ── NEW: Device fingerprint breakdown ──
+        cur.execute("""
+            SELECT device_info, COUNT(*) as login_count,
+                   MIN(timestamp) as first_seen, MAX(timestamp) as last_seen,
+                   COUNT(DISTINCT email) as user_count,
+                   COUNT(DISTINCT CONCAT(city, ',', country)) as location_count
+            FROM login_logs
+            WHERE device_info IS NOT NULL AND device_info != ''
+            GROUP BY device_info
+            ORDER BY login_count DESC LIMIT 20
+        """)
+        devices = []
+        for r in cur.fetchall():
+            device_str = r['device_info'] or '{}'
+            try:
+                di = json.loads(device_str)
+            except (json.JSONDecodeError, TypeError):
+                di = {}
+            devices.append({
+                'device_hash': device_str[:16] + '...' if len(device_str) > 16 else device_str,
+                'browser': di.get('userAgent', 'Unknown')[:60] if isinstance(di, dict) else 'Unknown',
+                'platform': di.get('platform', 'Unknown') if isinstance(di, dict) else 'Unknown',
+                'os': _extract_os(di.get('userAgent', '')) if isinstance(di, dict) else 'Unknown',
+                'login_count': r['login_count'],
+                'user_count': r['user_count'],
+                'location_count': r['location_count'],
+                'first_seen': str(r['first_seen']),
+                'last_seen': str(r['last_seen'])
+            })
+
+        # ── NEW: Location breakdown ──
+        cur.execute("""
+            SELECT city, country, COUNT(*) as cnt,
+                   COUNT(DISTINCT email) as user_count,
+                   AVG(total_risk) as avg_risk
+            FROM login_logs
+            WHERE city IS NOT NULL
+            GROUP BY city, country
+            ORDER BY cnt DESC LIMIT 15
+        """)
+        locations = [{
+            'city': r['city'], 'country': r['country'],
+            'login_count': r['cnt'], 'user_count': r['user_count'],
+            'avg_risk': round(float(r['avg_risk'] or 0), 1)
         } for r in cur.fetchall()]
 
         conn.close()
@@ -138,10 +273,27 @@ def get_stats():
             'total_users': total_users,
             'blocked_users': blocked_users,
             'suspicious_logins': suspicious_logins,
-            'recent_suspicious': suspicious
+            'unique_devices': unique_devices,
+            'unique_locations': unique_locations,
+            'high_risk_count': high_risk_count,
+            'recent_suspicious': suspicious,
+            'alerts': alerts[:20],
+            'devices': devices,
+            'locations': locations
         }), 200
     except Exception as e:
         return jsonify({"error": f"Failed to fetch stats: {str(e)}"}), 500
+
+
+def _extract_os(user_agent):
+    """Extract OS name from user agent string."""
+    ua = (user_agent or '').lower()
+    if 'windows' in ua: return 'Windows'
+    if 'mac' in ua: return 'macOS'
+    if 'linux' in ua: return 'Linux'
+    if 'android' in ua: return 'Android'
+    if 'iphone' in ua or 'ipad' in ua: return 'iOS'
+    return 'Unknown'
 
 
 @admin_bp.route('/api/admin/users', methods=['GET'])

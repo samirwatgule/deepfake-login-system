@@ -6,16 +6,20 @@ export default function AdminDashboardPage({ token }) {
     const [logs, setLogs] = useState([]);
     const [users, setUsers] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
     const [activeTab, setActiveTab] = useState('overview');
     const [statusFilter, setStatusFilter] = useState('');
     const [selectedUser, setSelectedUser] = useState(null);
     const [userLogs, setUserLogs] = useState(null);
     const [userLogsLoading, setUserLogsLoading] = useState(false);
+    const [fetchError, setFetchError] = useState('');
 
     useEffect(() => { fetchData(); }, []);
 
     const fetchData = async () => {
+        if (!loading) setRefreshing(true);
         setLoading(true);
+        setFetchError('');
         try {
             const [statsRes, logsRes, usersRes] = await Promise.all([
                 getStats(),
@@ -27,8 +31,10 @@ export default function AdminDashboardPage({ token }) {
             setUsers(usersRes.data.users || []);
         } catch (err) {
             console.error('Failed to fetch admin data:', err);
+            setFetchError(err.response?.data?.error || 'Failed to load dashboard data. Check your admin session.');
         } finally {
             setLoading(false);
+            setRefreshing(false);
         }
     };
 
@@ -70,7 +76,7 @@ export default function AdminDashboardPage({ token }) {
         ? logs.filter(l => l.decision === statusFilter)
         : logs;
 
-    if (loading) {
+    if (loading && !refreshing) {
         return (
             <div className="loading-center">
                 <div className="loading-spinner" />
@@ -79,6 +85,17 @@ export default function AdminDashboardPage({ token }) {
     }
 
     const s = stats || {};
+    const alerts = s.alerts || [];
+    const devices = s.devices || [];
+    const locations = s.locations || [];
+
+    const TABS = [
+        { key: 'overview', icon: '📊', label: 'Overview' },
+        { key: 'logs',     icon: '📋', label: 'Login Logs' },
+        { key: 'alerts',   icon: '🚨', label: `Alerts${alerts.length ? ` (${alerts.length})` : ''}` },
+        { key: 'devices',  icon: '🖥️', label: 'Devices' },
+        { key: 'users',    icon: '👥', label: 'Users' },
+    ];
 
     return (
         <div className="admin-dashboard">
@@ -87,37 +104,70 @@ export default function AdminDashboardPage({ token }) {
                     <h1>⚡ QuantumShield Command Center</h1>
                     <p>Real-time AI security monitoring, deepfake analytics, and user management</p>
                 </div>
-                <button className="btn btn-outline" onClick={fetchData}>🔄 Refresh</button>
+                <button className="btn btn-outline" onClick={fetchData} disabled={refreshing} style={{minWidth:120}}>
+                    {refreshing ? <><span className="spinner-sm" /> Refreshing...</> : '🔄 Refresh'}
+                </button>
             </div>
+
+            {fetchError && <div className="error-alert" style={{margin:'0 0 16px'}}>{fetchError}</div>}
 
             {/* ── Tab Navigation ── */}
             <div className="admin-tabs">
-                {['overview', 'logs', 'users'].map(tab => (
+                {TABS.map(tab => (
                     <button
-                        key={tab}
-                        className={`admin-tab ${activeTab === tab ? 'active' : ''}`}
-                        onClick={() => setActiveTab(tab)}
+                        key={tab.key}
+                        className={`admin-tab ${activeTab === tab.key ? 'active' : ''}`}
+                        onClick={() => setActiveTab(tab.key)}
                     >
-                        {tab === 'overview' && '📊 '}
-                        {tab === 'logs' && '📋 '}
-                        {tab === 'users' && '👥 '}
-                        {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                        {tab.icon} {tab.label}
                     </button>
                 ))}
             </div>
 
-            {/* ── Overview Tab ── */}
+            {/* ══════════════════════════════════════════════════════════════ */}
+            {/* ── OVERVIEW TAB ── */}
+            {/* ══════════════════════════════════════════════════════════════ */}
             {activeTab === 'overview' && (
                 <>
-                    <div className="stats-grid stats-grid-6">
-                        <div className="stat-card"><div className="stat-label">Total Logins</div><div className="stat-value">{s.total_logins || 0}</div></div>
-                        <div className="stat-card"><div className="stat-label">Allowed</div><div className="stat-value success">{s.allowed || 0}</div></div>
-                        <div className="stat-card"><div className="stat-label">Flagged</div><div className="stat-value warning">{s.flagged || 0}</div></div>
-                        <div className="stat-card"><div className="stat-label">Blocked</div><div className="stat-value danger">{s.blocked || 0}</div></div>
-                        <div className="stat-card"><div className="stat-label">Deepfakes Caught</div><div className="stat-value danger">{s.deepfakes_blocked || 0}</div></div>
-                        <div className="stat-card"><div className="stat-label">Total Users</div><div className="stat-value">{s.total_users || 0}</div></div>
-                        <div className="stat-card"><div className="stat-label">Blocked Users</div><div className="stat-value danger">{s.blocked_users || 0}</div></div>
-                        <div className="stat-card"><div className="stat-label">Impossible Travel</div><div className="stat-value warning">{s.suspicious_logins || 0}</div></div>
+                    {/* Summary Cards - 2 rows */}
+                    <div className="stats-grid stats-grid-4">
+                        <div className="stat-card">
+                            <div className="stat-label">Total Login Attempts</div>
+                            <div className="stat-value">{s.total_logins || 0}</div>
+                        </div>
+                        <div className="stat-card">
+                            <div className="stat-label">✅ Allowed</div>
+                            <div className="stat-value success">{s.allowed || 0}</div>
+                        </div>
+                        <div className="stat-card">
+                            <div className="stat-label">⚠️ Flagged</div>
+                            <div className="stat-value warning">{s.flagged || 0}</div>
+                        </div>
+                        <div className="stat-card">
+                            <div className="stat-label">🚫 Blocked</div>
+                            <div className="stat-value danger">{s.blocked || 0}</div>
+                        </div>
+                    </div>
+
+                    <div className="stats-grid stats-grid-4" style={{marginTop: 12}}>
+                        <div className="stat-card">
+                            <div className="stat-label">🤖 Deepfakes Caught</div>
+                            <div className="stat-value danger">{s.deepfakes_blocked || 0}</div>
+                        </div>
+                        <div className="stat-card">
+                            <div className="stat-label">👥 Registered Users</div>
+                            <div className="stat-value">{s.total_users || 0}
+                                {s.blocked_users > 0 && <span style={{fontSize:'0.7rem',color:'#ef4444',marginLeft:6}}>({s.blocked_users} blocked)</span>}
+                            </div>
+                        </div>
+                        <div className="stat-card">
+                            <div className="stat-label">🖥️ Unique Devices</div>
+                            <div className="stat-value">{s.unique_devices || 0}</div>
+                        </div>
+                        <div className="stat-card">
+                            <div className="stat-label">🌍 Unique Locations</div>
+                            <div className="stat-value">{s.unique_locations || 0}</div>
+                        </div>
                     </div>
 
                     <div className="dashboard-grid">
@@ -143,7 +193,7 @@ export default function AdminDashboardPage({ token }) {
                                         ))}
                                     </>
                                 ) : (
-                                    <div className="empty-state"><div className="empty-state-icon">📊</div><p>No data yet</p></div>
+                                    <div className="empty-state"><div className="empty-state-icon">📊</div><p>No login data yet</p></div>
                                 )}
                             </div>
                         </div>
@@ -170,11 +220,43 @@ export default function AdminDashboardPage({ token }) {
                                         </div>
                                     </div>
                                 ) : (
-                                    <div className="empty-state"><div className="empty-state-icon">🔄</div><p>No data yet</p></div>
+                                    <div className="empty-state"><div className="empty-state-icon">🔄</div><p>No login data yet</p></div>
                                 )}
                             </div>
                         </div>
                     </div>
+
+                    {/* Location Breakdown */}
+                    {locations.length > 0 && (
+                        <div className="dashboard-card full-width" style={{ marginBottom: 20 }}>
+                            <div className="card-header">🌍 Login Locations</div>
+                            <div className="card-body" style={{ padding: 0 }}>
+                                <table className="logs-table">
+                                    <thead>
+                                        <tr>
+                                            <th>City</th><th>Country</th><th>Logins</th>
+                                            <th>Users</th><th>Avg Risk</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {locations.map((loc, i) => (
+                                            <tr key={i}>
+                                                <td style={{ fontWeight: 500 }}>{loc.city}</td>
+                                                <td>{loc.country}</td>
+                                                <td>{loc.login_count}</td>
+                                                <td>{loc.user_count}</td>
+                                                <td>
+                                                    <span style={{ color: loc.avg_risk > 50 ? '#ef4444' : loc.avg_risk > 25 ? '#f59e0b' : '#10b981', fontWeight: 700 }}>
+                                                        {loc.avg_risk}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
 
                     {/* Recent Suspicious */}
                     {s.recent_suspicious && s.recent_suspicious.length > 0 && (
@@ -208,11 +290,13 @@ export default function AdminDashboardPage({ token }) {
                 </>
             )}
 
-            {/* ── Logs Tab ── */}
+            {/* ══════════════════════════════════════════════════════════════ */}
+            {/* ── LOGS TAB ── */}
+            {/* ══════════════════════════════════════════════════════════════ */}
             {activeTab === 'logs' && (
                 <div className="dashboard-card full-width">
-                    <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span>All Login Logs</span>
+                    <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                        <span>All Login Logs ({filteredLogs.length})</span>
                         <div className="filter-group">
                             {['', 'ALLOW', 'FLAG', 'BLOCK'].map(f => (
                                 <button
@@ -261,7 +345,81 @@ export default function AdminDashboardPage({ token }) {
                 </div>
             )}
 
-            {/* ── Users Tab ── */}
+            {/* ══════════════════════════════════════════════════════════════ */}
+            {/* ── ALERTS TAB ── */}
+            {/* ══════════════════════════════════════════════════════════════ */}
+            {activeTab === 'alerts' && (
+                <div className="dashboard-card full-width">
+                    <div className="card-header">🚨 Security Alerts ({alerts.length})</div>
+                    <div className="card-body" style={{ padding: alerts.length ? 0 : undefined }}>
+                        {alerts.length > 0 ? (
+                            <div className="alerts-list">
+                                {alerts.map((alert, i) => (
+                                    <div key={i} className={`alert-item alert-${alert.type}`}>
+                                        <div className="alert-icon">{alert.icon}</div>
+                                        <div className="alert-content">
+                                            <div className="alert-message">{alert.message}</div>
+                                            <div className="alert-detail">{alert.detail}</div>
+                                        </div>
+                                        {alert.timestamp && (
+                                            <div className="alert-time">{formatTime(alert.timestamp)}</div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="empty-state">
+                                <div className="empty-state-icon">✅</div>
+                                <p>No security alerts — system is clean</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* ══════════════════════════════════════════════════════════════ */}
+            {/* ── DEVICES TAB ── */}
+            {/* ══════════════════════════════════════════════════════════════ */}
+            {activeTab === 'devices' && (
+                <div className="dashboard-card full-width">
+                    <div className="card-header">🖥️ Device Fingerprints ({devices.length})</div>
+                    <div className="card-body" style={{ padding: 0 }}>
+                        {devices.length > 0 ? (
+                            <table className="logs-table">
+                                <thead>
+                                    <tr>
+                                        <th>Platform</th><th>OS</th><th>Browser</th>
+                                        <th>Logins</th><th>Users</th><th>Locations</th>
+                                        <th>First Seen</th><th>Last Seen</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {devices.map((dev, i) => (
+                                        <tr key={i}>
+                                            <td style={{ fontWeight: 500 }}>{dev.platform}</td>
+                                            <td>{dev.os}</td>
+                                            <td style={{ fontSize: '0.75rem', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                {dev.browser}
+                                            </td>
+                                            <td style={{ fontWeight: 700 }}>{dev.login_count}</td>
+                                            <td>{dev.user_count}</td>
+                                            <td>{dev.location_count}</td>
+                                            <td>{formatTime(dev.first_seen)}</td>
+                                            <td>{formatTime(dev.last_seen)}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        ) : (
+                            <div className="empty-state"><div className="empty-state-icon">🖥️</div><p>No device data yet</p></div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* ══════════════════════════════════════════════════════════════ */}
+            {/* ── USERS TAB ── */}
+            {/* ══════════════════════════════════════════════════════════════ */}
             {activeTab === 'users' && (
                 <div className="dashboard-card full-width">
                     <div className="card-header">👥 Registered Users ({users.length})</div>
