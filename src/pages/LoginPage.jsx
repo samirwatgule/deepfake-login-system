@@ -123,7 +123,20 @@ export default function LoginPage({ onLogin }) {
             }
             // BLOCK = don't login, just show result (deepfake detected)
         } catch (err) {
-            setError(err.response?.data?.error || 'Login failed. Please try again.');
+            const errData = err.response?.data;
+            if (errData?.face_verdict === 'FACE_MISMATCH') {
+                // Show face mismatch as a block result in the UI
+                setRiskResult({
+                    device_risk: 0, location_risk: 0, behavior_risk: 0,
+                    face_risk: 30, total_risk: 100, decision: 'BLOCK',
+                    face_verdict: 'FACE_MISMATCH',
+                    face_confidence: errData.face_confidence || 0,
+                    details: errData.details || []
+                });
+                setError('Face verification failed — the face does not match the registered user.');
+            } else {
+                setError(errData?.error || 'Login failed. Please try again.');
+            }
         } finally {
             setLoading(false);
         }
@@ -152,6 +165,9 @@ export default function LoginPage({ onLogin }) {
         if (!riskResult) return 'High risk detected — login denied.';
         if (riskResult.face_verdict === 'FAKE') {
             return `🚫 DEEPFAKE DETECTED — AI model identified a fake/manipulated face (${(riskResult.face_confidence * 100).toFixed(1)}% confidence). Access denied.`;
+        }
+        if (riskResult.face_verdict === 'FACE_MISMATCH') {
+            return `❌ FACE MISMATCH — The face does not match the registered user. Only the account owner can log in.`;
         }
         return 'High risk detected — login attempt denied for security.';
     };
@@ -295,7 +311,7 @@ export default function LoginPage({ onLogin }) {
                             {riskResult.face_verdict && (
                                 <div className={`face-verdict-banner ${riskResult.face_verdict.toLowerCase()}`}>
                                     <span className="face-verdict-icon">
-                                        {riskResult.face_verdict === 'REAL' ? '✅' : riskResult.face_verdict === 'FAKE' ? '🚫' : '⚠️'}
+                                        {riskResult.face_verdict === 'REAL' ? '✅' : riskResult.face_verdict === 'FAKE' ? '🚫' : riskResult.face_verdict === 'FACE_MISMATCH' ? '❌' : '⚠️'}
                                     </span>
                                     <span>
                                         Face AI Verdict: <strong>{riskResult.face_verdict}</strong>

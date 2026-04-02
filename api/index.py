@@ -26,7 +26,7 @@ def create_app():
     
     # Load config
     app.config['JWT_SECRET'] = os.environ.get('JWT_SECRET', 'dev-secret-key-change-in-production')
-    app.config['DATABASE_URL'] = os.environ.get('DATABASE_URL', 'postgresql://postgres:root@localhost:5432/truth_shield')
+    app.config['DATABASE_URL'] = os.environ.get('DATABASE_URL', 'postgresql://postgres:1234@localhost:5432/quantumshield')
     app.config['GEO_API_URL'] = os.environ.get('GEO_API_URL', 'https://ipapi.co')
     app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
     

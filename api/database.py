@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 # PostgreSQL connection URL — set via environment variable or use default
 DATABASE_URL = os.environ.get(
     'DATABASE_URL',
-    'postgresql://postgres:postgres@localhost:5432/quantumshield'
+    'postgresql://postgres:1234@localhost:5432/quantumshield'
 )
 
 
